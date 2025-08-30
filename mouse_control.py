@@ -2,34 +2,34 @@ import cv2
 import mediapipe as mp
 import numpy as np
 import pyautogui
+import os
 
-# Initialize MediaPipe hands and drawing utilities
+# Suppress TensorFlow and Mediapipe logs
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+
+# Initialize MediaPipe Hands
 mp_hands = mp.solutions.hands
-hands = mp_hands.Hands()
+hands = mp_hands.Hands(max_num_hands=1)
 mp_draw = mp.solutions.drawing_utils
 
-# Get screen dimensions
+# Screen dimensions for cursor mapping
 screen_width, screen_height = pyautogui.size()
 
-# Function to check if fingers are pinched for a click
-def is_pinching(landmarks):
-    thumb_tip = landmarks[4]
-    index_tip = landmarks[8]
+def is_touching(landmarks, frame):
+    """Check if thumb and index finger are touching."""
+    thumb_tip = np.array([landmarks[4][0], landmarks[4][1]])
+    index_tip = np.array([landmarks[8][0], landmarks[8][1]])
+    distance = np.linalg.norm(thumb_tip - index_tip)
+    return distance < 20  # Adjust sensitivity as needed
 
-    # Calculate the distance between thumb tip and index tip
-    distance = np.linalg.norm(np.array(thumb_tip) - np.array(index_tip))
-
-    # If the distance is small, consider it as a pinching gesture
-    return distance < 40  # Adjust this threshold if necessary
-
-# Function to control mouse using hand gestures
-def control_mouse():
+def control_cursor():
+    """Main function to control cursor using hand gestures."""
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
-        print("Error: Could not open webcam.")
+        print("Error: Could not access webcam.")
         return
 
-    pinch_active = False  # Track if pinch gesture is currently active
+    click_active = False  # Prevent multiple clicks while fingers stay together
 
     while True:
         ret, frame = cap.read()
@@ -37,51 +37,44 @@ def control_mouse():
             print("Error: Could not read frame.")
             break
 
-        # Convert the frame to RGB
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        result = hands.process(frame_rgb)
+        frame = cv2.flip(frame, 1)  # Mirror image for natural control
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = hands.process(rgb_frame)
 
-        if result.multi_hand_landmarks:
-            for hand_landmarks in result.multi_hand_landmarks:
-                # Draw the hand landmarks on the frame
+        if results.multi_hand_landmarks:
+            for hand_landmarks in results.multi_hand_landmarks:
                 mp_draw.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
 
-                wrist_position = hand_landmarks.landmark[0]
-                wrist_x = int(wrist_position.x * frame.shape[1])
-                wrist_y = int(wrist_position.y * frame.shape[0])
+                landmarks = []
+                for id, lm in enumerate(hand_landmarks.landmark):
+                    x, y = int(lm.x * frame.shape[1]), int(lm.y * frame.shape[0])
+                    landmarks.append((x, y))
 
-                # Define a smaller central region of the camera frame for tracking
-                camera_x_min, camera_x_max = frame.shape[1] * 0.25, frame.shape[1] * 0.75
-                camera_y_min, camera_y_max = frame.shape[0] * 0.25, frame.shape[0] * 0.75
+                # Use wrist (id=0) or index finger base (id=5) to move cursor
+                cursor_x = np.interp(landmarks[0][0], [100, frame.shape[1]-100], [0, screen_width])
+                cursor_y = np.interp(landmarks[0][1], [100, frame.shape[0]-100], [0, screen_height])
+                pyautogui.moveTo(cursor_x, cursor_y)
 
-                 # Map the wrist position in this smaller range to the full screen coordinates
-                screen_x = np.interp(wrist_x, [camera_x_min, camera_x_max], [screen_width, 0])
-                screen_y = np.interp(wrist_y, [camera_y_min, camera_y_max], [0, screen_height])
-
-                # Move mouse to the mapped position
-                pyautogui.moveTo(screen_x, screen_y)
-
-                # Check for pinch gesture for clicking
-                landmarks = [[id, lm.x * frame.shape[1], lm.y * frame.shape[0]]
-                             for id, lm in enumerate(hand_landmarks.landmark)]
-                
-                if is_pinching(landmarks):
-                   if not pinch_active:  # Trigger click on first pinch detection
-                    pyautogui.click()
-                    pinch_active = True  # Set pinch_active to prevent repeated clicks
+                # Left click when index and thumb touch
+                if is_touching(landmarks, frame):
+                    if not click_active:
+                        pyautogui.click()
+                        click_active = True
                 else:
-                    pinch_active = False  # Reset pinch detection when gesture stops
+                    click_active = False
 
-        # Show the video feed with landmarks
-        cv2.imshow('Hand Gesture Mouse Control', frame)
+        # Display feed (optional)
+        try:
+            cv2.imshow("Cursor Control", frame)
+        except cv2.error:
+            pass  # Skip if OpenCV GUI not supported
 
-        # Exit the loop when 'q' is pressed
+        # Exit with 'q'
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
     cap.release()
     cv2.destroyAllWindows()
 
-# Main execution
 if __name__ == "__main__":
-    control_mouse()
+    control_cursor()
